@@ -26,12 +26,15 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
 
+        # triangular matrix (for masked attention)
         self.register_buffer("bias",
                              torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size,
                                                                                                config.block_size))
 
     def forward(self, x):
+        # batch size, sequence length, embedding dim
         B, T, C = x.size()
+
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
