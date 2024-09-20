@@ -93,6 +93,21 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
+    def forward(self, idx):
+        B, T = idx.size()
+        assert T <= self.config.block_size
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        pos_emb = self.transformer.wpe(pos)
+        tok_emb = self.transformer.wte(idx)
+        x = tok_emb + pos_emb
+        for block in self.transformer.h:
+            x = block.forward(x)
+
+        x = self.transformer.ln_f(x)
+        logits = self.lm_head(x)  # B x T x vocab_size
+
+        return logits
+
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
@@ -153,4 +168,4 @@ class GPT(nn.Module):
 
 # -----------------------------------------
 model = GPT.from_pretrained('gpt2')
-print('not crashed')
+model.eval()
