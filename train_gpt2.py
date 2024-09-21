@@ -39,6 +39,8 @@ class CausalSelfAttention(nn.Module):
 
         qkv = self.c_attn(x)
         q, k, v = qkv.split(self.n_embd, dim=2)
+
+        # multihead attention
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
