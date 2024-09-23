@@ -96,7 +96,7 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         B, T = idx.size()
         assert T <= self.config.block_size
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
@@ -109,7 +109,11 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)  # B x T x vocab_size
 
-        return logits
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+
+        return logits, loss
 
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):
@@ -170,8 +174,34 @@ class GPT(nn.Module):
 
 
 # -----------------------------------------
-model = GPT.from_pretrained('gpt2')
+
+device = 'cpu'
+if torch.cuda.is_available():
+    device = 'cuda'
+elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    device = 'mps'
+print(f"using device: {device}")
+
+enc = tiktoken.get_encoding('gpt2')
+with open('input.txt', 'r') as f:
+    text = f.read()
+text = text[:1000]
+tokens = enc.encode(text)
+B, T = 4, 32
+buf = torch.tensor(tokens[:B*T + 1])
+x = buf[:-1].view(B, T)
+y = buf[1:].view(B, T)
+
+model = GPT(GPTConfig())
+model.to(device)
+logits, loss = model.forward(x, y)
+print(loss)
+import sys; sys.exit(0)
+
+# model = GPT.from_pretrained('gpt2')
+model = GPT(GPTConfig())
 model.eval()
+model.to(device)
 
 print('model configured successfully.')
 
@@ -182,7 +212,7 @@ enc = tiktoken.get_encoding("gpt2")
 tokens = enc.encode("Hello, I'm a language model,")
 tokens = torch.tensor(tokens, dtype=torch.long)
 tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
-x = tokens
+x = tokens.to(device)
 
 torch.manual_seed(42)
 while x.size(1) < max_length:
