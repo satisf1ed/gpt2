@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import math
 import tiktoken
+import time
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -46,11 +47,15 @@ class CausalSelfAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
 
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
+        # Basic way to calculate attention:
+        # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        # att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+        # att = F.softmax(att, dim=-1)
+        # y = att @ v
 
-        y = att @ v
+        # Flash attention (calculating softmax online):
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         y = self.c_proj(y)
         return y
@@ -196,7 +201,7 @@ class DataLoaderLite:
         self.B = B
         self.T = T
 
-        with open('/Users/andrey/PycharmProjects/gpt2/input.txt', 'r') as f:
+        with open('input.txt', 'r') as f:
             text = f.read()
         enc = tiktoken.get_encoding('gpt2')
         tokens = enc.encode(text)
@@ -228,25 +233,41 @@ elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
     device = 'mps'
 print(f"using device: {device}")
 
+# random seed
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
 # configuring dataloader and model
-train_loader = DataLoaderLite(4, 32)
-model = GPT(GPTConfig())
+train_loader = DataLoaderLite(B=8, T=512)
+model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
+# does not work for me (problems with triton)
+# model = torch.compile(model)
+print('model configured successfully.')
+
+torch.set_float32_matmul_precision('high')
 
 # train cycle
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
+
+    # use this only if your GPU supports bfloat16 format
+    # with torch.autocast(device_type=device, dtype=torch.bfloat16):
+    #     logits, loss = model(x, y)
+
     logits, loss = model(x, y)
     loss.backward()
     optimizer.step()
-    print(f"step {i}, loss: {loss.item()}")
+    torch.cuda.synchronize() if torch.cuda.is_available() else None
+    t1 = time.time()
+    dt = (t1 - t0) * 1000
+    tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
+    print(f"step {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
 
 
 import sys; sys.exit(0)
