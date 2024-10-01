@@ -277,8 +277,16 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
+# preparing for gradient accumulating
+B = 8
+T = 512
+total_batch_size = 524288
+assert total_batch_size % (B * T) == 0
+grad_accum_steps = total_batch_size // (B * T)
+print(f"total batch size is {total_batch_size} => gradient accumulation steps = {grad_accum_steps}")
+
 # configuring dataloader and model
-train_loader = DataLoaderLite(B=8, T=512)
+train_loader = DataLoaderLite(B=B, T=T)
 model = GPT(GPTConfig(vocab_size=50304))
 model.to(device)
 # does not work for me (problems with triton)
@@ -291,16 +299,23 @@ torch.set_float32_matmul_precision('high')
 optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device=device)
 for step in range(50):
     t0 = time.time()
-    x, y = train_loader.next_batch()
-    x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
+    loss_accum = 0.0
 
-    # use this only if your GPU supports bfloat16 format
-    # with torch.autocast(device_type=device, dtype=torch.bfloat16):
-    #     logits, loss = model(x, y)
+    # gradient accumulation
+    for micro_step in range(grad_accum_steps):
+        x, y = train_loader.next_batch()
+        x, y = x.to(device), y.to(device)
 
-    logits, loss = model(x, y)
-    loss.backward()
+        # use this only if your GPU supports bfloat16 format
+        # with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        #     logits, loss = model(x, y)
+
+        logits, loss = model(x, y)
+        loss = loss / grad_accum_steps
+        loss_accum += loss.detach()
+        loss.backward()
+
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     torch.cuda.synchronize() if torch.cuda.is_available() else None
@@ -309,8 +324,8 @@ for step in range(50):
         param_group['lr'] = lr
     t1 = time.time()
     dt = (t1 - t0) * 1000
-    tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
-    print(f"step {step}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
+    tokens_per_sec = (train_loader.B * train_loader.T * grad_accum_steps) / (t1 - t0)
+    print(f"step {step}, loss: {loss_accum.item():.6f}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
 
 
 import sys; sys.exit(0)
